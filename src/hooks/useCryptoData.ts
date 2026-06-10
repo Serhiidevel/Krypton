@@ -45,60 +45,85 @@ interface UseCryptoDataResult {
   error: string | null;
 }
 
+let cachedCryptoAssets: CryptoAsset[] | null = null;
+let cryptoAssetsRequest: Promise<CryptoAsset[]> | null = null;
+
+async function fetchCryptoAssets(): Promise<CryptoAsset[]> {
+  if (cachedCryptoAssets !== null) {
+    return cachedCryptoAssets;
+  }
+
+  if (cryptoAssetsRequest !== null) {
+    return cryptoAssetsRequest;
+  }
+
+  cryptoAssetsRequest = (async () => {
+    const apiKey = import.meta.env.VITE_COINGECKO_API_KEY;
+
+    const response = await fetch(COINGECKO_MARKETS_URL, {
+      headers: {
+        'x-cg-demo-api-key': apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`CoinGecko request failed: ${response.status}`);
+    }
+
+    const responseData = (await response.json()) as unknown;
+
+    if (!isCryptoAssetArray(responseData)) {
+      throw new Error('CoinGecko returned an unexpected response shape.');
+    }
+
+    cachedCryptoAssets = responseData;
+    return responseData;
+  })();
+
+  try {
+    return await cryptoAssetsRequest;
+  } finally {
+    cryptoAssetsRequest = null;
+  }
+}
+
 export function useCryptoData(): UseCryptoDataResult {
-  const [data, setData] = useState<CryptoAsset[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [data, setData] = useState<CryptoAsset[]>(cachedCryptoAssets ?? []);
+  const [loading, setLoading] = useState<boolean>(cachedCryptoAssets === null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const controller = new AbortController();
+    let isActive = true;
 
-    async function fetchCryptoData() {
-      const apiKey = import.meta.env.VITE_COINGECKO_API_KEY;
-
+    async function loadCryptoData() {
       setLoading(true);
       setError(null);
 
       try {
-        const response = await fetch(COINGECKO_MARKETS_URL, {
-          headers: {
-            'x-cg-demo-api-key': apiKey,
-          },
-          signal: controller.signal,
-        });
+        const assets = await fetchCryptoAssets();
 
-        if (!response.ok) {
-          throw new Error(`CoinGecko request failed: ${response.status}`);
+        if (isActive) {
+          setData(assets);
         }
-
-        const responseData = (await response.json()) as unknown;
-
-        if (!isCryptoAssetArray(responseData)) {
-          throw new Error('CoinGecko returned an unexpected response shape.');
-        }
-
-        setData(responseData);
       } catch (requestError) {
-        if (requestError instanceof DOMException && requestError.name === 'AbortError') {
-          return;
+        if (isActive) {
+          setError(
+            requestError instanceof Error
+              ? requestError.message
+              : 'Failed to load crypto data.',
+          );
         }
-
-        setError(
-          requestError instanceof Error
-            ? requestError.message
-            : 'Failed to load crypto data.',
-        );
       } finally {
-        if (!controller.signal.aborted) {
+        if (isActive) {
           setLoading(false);
         }
       }
     }
 
-    void fetchCryptoData();
+    void loadCryptoData();
 
     return () => {
-      controller.abort();
+      isActive = false;
     };
   }, []);
 
